@@ -267,15 +267,106 @@ let budgetBreakdown = [
 let selectedDayNumber = 1;
 
 // ================= INITIALIZATION =================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   initFormDefaults();
+
+  // Initialize DB and load persisted data
+  await initDatabaseData();
+
   renderItinerary();
   renderPackingList();
   renderBudget();
   renderMyTrips();
   renderDestinations();
 });
+
+async function initDatabaseData() {
+  await DB.init();
+
+  const storedTrips = await DB.getAllTrips();
+  if (storedTrips && storedTrips.length > 0) {
+    mySavedTrips = storedTrips;
+    const currentActive = mySavedTrips.find(t => t.active) || mySavedTrips[0];
+    currentActive.active = true;
+    
+    // Load full active trip details
+    activeTrip.id = currentActive.id;
+    activeTrip.destination = currentActive.destination;
+    activeTrip.departure = currentActive.departure || '2026-10-10';
+    activeTrip.returnDate = currentActive.returnDate || '2026-10-16';
+    activeTrip.duration = currentActive.durationNum || 7;
+    activeTrip.budget = currentActive.budgetNum || 85000;
+    activeTrip.currency = currentActive.currency || '₹';
+    activeTrip.travellerType = currentActive.type || 'Couple / Pair';
+    activeTrip.travellers = currentActive.travellers || 2;
+    activeTrip.styles = currentActive.styles || ['Cultural & Historic'];
+    activeTrip.hotel = currentActive.hotel || 'Cozy Boutique Stay';
+    activeTrip.city = currentActive.city || currentActive.destination.split(',')[0];
+    activeTrip.pace = currentActive.pace || 'Balanced';
+    activeTrip.img = currentActive.img || activeTrip.img;
+
+    currentCurrency = activeTrip.currency;
+
+    // Load Itinerary
+    const storedItinerary = await DB.getItinerary(activeTrip.id);
+    if (storedItinerary && storedItinerary.length > 0) {
+      activeTrip.itinerary = storedItinerary.map(it => ({
+        day: it.day,
+        city: it.city,
+        hotel: it.hotel,
+        notes: it.notes,
+        morning: it.activities?.morning || [],
+        afternoon: it.activities?.afternoon || [],
+        evening: it.activities?.evening || []
+      })).sort((a, b) => a.day - b.day);
+    }
+
+    // Load Packing
+    const storedPacking = await DB.getPacking(activeTrip.id);
+    if (storedPacking) {
+      packingData = storedPacking;
+    }
+
+    // Load Budget
+    const storedBudget = await DB.getBudget(activeTrip.id);
+    if (storedBudget) {
+      budgetBreakdown = storedBudget.breakdown || budgetBreakdown;
+      currentCurrency = storedBudget.currency || currentCurrency;
+    }
+  } else {
+    // Seed initial trip data into DB
+    const initialTripRecord = {
+      id: activeTrip.id,
+      destination: activeTrip.destination,
+      departure: activeTrip.departure,
+      returnDate: activeTrip.returnDate,
+      duration: `${activeTrip.duration} Days`,
+      durationNum: activeTrip.duration,
+      budget: `${activeTrip.currency}${activeTrip.budget.toLocaleString()}`,
+      budgetNum: activeTrip.budget,
+      currency: activeTrip.currency,
+      type: `${activeTrip.travellerType} (${activeTrip.travellers})`,
+      travellers: activeTrip.travellers,
+      styles: activeTrip.styles,
+      hotel: activeTrip.hotel,
+      city: activeTrip.city,
+      pace: activeTrip.pace,
+      img: activeTrip.img,
+      active: true
+    };
+
+    await DB.saveTrip(initialTripRecord);
+    await DB.saveItinerary(activeTrip.id, activeTrip.itinerary);
+    await DB.savePacking(activeTrip.id, packingData);
+    await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
+
+    // Seed other mock trips
+    for (let i = 1; i < mySavedTrips.length; i++) {
+      await DB.saveTrip(mySavedTrips[i]);
+    }
+  }
+}
 
 // ================= NAVIGATION =================
 function setupNavigation() {
@@ -446,19 +537,30 @@ function handleTripPlan(e) {
     itinerary: generatedItinerary
   };
 
-  // Add to my saved trips
-  mySavedTrips.forEach(t => t.active = false);
-  mySavedTrips.unshift({
+  // Save new trip & update all saved trips in DB
+  const newTripRecord = {
     id: activeTrip.id,
     destination: dest,
+    departure: dep,
+    returnDate: ret,
     dates: `${dep} to ${ret}`,
     duration: `${daysCount} Days`,
+    durationNum: daysCount,
     budget: `${currency}${budget.toLocaleString()}`,
+    budgetNum: budget,
+    currency: currency,
     type: `${travellerType} (${travellerCount})`,
+    travellers: travellerCount,
+    styles: styles.length ? styles : ['Cultural & Historic'],
     hotel: hotel,
+    city: city,
+    pace: pace,
     img: activeTrip.img,
     active: true
-  });
+  };
+
+  mySavedTrips.forEach(t => t.active = false);
+  mySavedTrips.unshift(newTripRecord);
 
   // Update budget amounts
   budgetBreakdown = [
@@ -471,6 +573,14 @@ function handleTripPlan(e) {
   currentCurrency = currency;
   const currSelect = document.getElementById('budgetViewCurrency');
   if (currSelect) currSelect.value = currency;
+
+  // Persist to DB
+  for (const t of mySavedTrips) {
+    await DB.saveTrip(t);
+  }
+  await DB.saveItinerary(activeTrip.id, activeTrip.itinerary);
+  await DB.savePacking(activeTrip.id, packingData);
+  await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
 
   // Re-render
   selectedDayNumber = 1;
@@ -648,18 +758,20 @@ function renderPackingList() {
   document.getElementById('packProgressBar').style.width = `${pct}%`;
 }
 
-function togglePackItem(catKey, index) {
+async function togglePackItem(catKey, index) {
   packingData[catKey][index].done = !packingData[catKey][index].done;
   renderPackingList();
+  await DB.savePacking(activeTrip.id, packingData);
 }
 
-function deletePackItem(catKey, index) {
+async function deletePackItem(catKey, index) {
   packingData[catKey].splice(index, 1);
   renderPackingList();
+  await DB.savePacking(activeTrip.id, packingData);
   showToast('🗑️ Item removed from packing list');
 }
 
-function addPackingItem() {
+async function addPackingItem() {
   const input = document.getElementById('customPackInput');
   const catSelect = document.getElementById('customPackCategory');
   const text = input.value.trim();
@@ -675,6 +787,7 @@ function addPackingItem() {
   packingData[cat].push({ text, done: false });
   input.value = '';
   renderPackingList();
+  await DB.savePacking(activeTrip.id, packingData);
   showToast(`🎒 Added "${text}" to checklist!`);
 }
 
@@ -713,13 +826,14 @@ function renderBudget() {
   });
 }
 
-function changeBudgetCurrency(newCurr) {
+async function changeBudgetCurrency(newCurr) {
   currentCurrency = newCurr;
   renderBudget();
+  await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
   showToast(`Currency updated to ${newCurr}`);
 }
 
-function addCustomExpense() {
+async function addCustomExpense() {
   const desc = document.getElementById('expenseName').value.trim();
   const catKey = document.getElementById('expenseCategory').value;
   const cost = parseFloat(document.getElementById('expenseAmount').value);
@@ -744,6 +858,7 @@ function addCustomExpense() {
   document.getElementById('expenseName').value = '';
   document.getElementById('expenseAmount').value = '';
   renderBudget();
+  await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
   showToast(`🪙 Added ${currentCurrency}${cost} to ${catKey}!`);
 }
 
@@ -783,26 +898,69 @@ function renderMyTrips() {
   });
 }
 
-function switchActiveTrip(tripId) {
+async function switchActiveTrip(tripId) {
   mySavedTrips.forEach(t => t.active = (t.id === tripId));
+  for (const t of mySavedTrips) {
+    await DB.saveTrip(t);
+  }
+
   const selected = mySavedTrips.find(t => t.id === tripId);
   if (selected) {
+    activeTrip.id = selected.id;
     activeTrip.destination = selected.destination;
     activeTrip.hotel = selected.hotel;
+    if (selected.durationNum) activeTrip.duration = selected.durationNum;
+    if (selected.budgetNum) activeTrip.budget = selected.budgetNum;
+    if (selected.currency) currentCurrency = selected.currency;
+
+    // Load Itinerary
+    const storedItinerary = await DB.getItinerary(selected.id);
+    if (storedItinerary && storedItinerary.length > 0) {
+      activeTrip.itinerary = storedItinerary.map(it => ({
+        day: it.day,
+        city: it.city,
+        hotel: it.hotel,
+        notes: it.notes,
+        morning: it.activities?.morning || [],
+        afternoon: it.activities?.afternoon || [],
+        evening: it.activities?.evening || []
+      })).sort((a, b) => a.day - b.day);
+    }
+
+    // Load Packing
+    const storedPacking = await DB.getPacking(selected.id);
+    if (storedPacking) packingData = storedPacking;
+
+    // Load Budget
+    const storedBudget = await DB.getBudget(selected.id);
+    if (storedBudget) {
+      budgetBreakdown = storedBudget.breakdown || budgetBreakdown;
+      currentCurrency = storedBudget.currency || currentCurrency;
+    }
+
+    selectedDayNumber = 1;
     renderItinerary();
+    renderPackingList();
+    renderBudget();
     renderMyTrips();
     showToast(`📔 Opened scrapbook for ${selected.destination}!`);
     navigateTo('itinerary');
   }
 }
 
-function deleteTrip(tripId) {
+async function deleteTrip(tripId) {
   if (mySavedTrips.length <= 1) {
     showToast('Keep at least one trip in your scrapbook journal!');
     return;
   }
   mySavedTrips = mySavedTrips.filter(t => t.id !== tripId);
-  renderMyTrips();
+  await DB.deleteTrip(tripId);
+
+  if (activeTrip.id === tripId && mySavedTrips.length > 0) {
+    await switchActiveTrip(mySavedTrips[0].id);
+  } else {
+    renderMyTrips();
+  }
   showToast('🗑️ Journey removed from scrapbook.');
 }
 
