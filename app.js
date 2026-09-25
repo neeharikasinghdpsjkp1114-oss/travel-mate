@@ -290,15 +290,15 @@ async function initDatabaseData() {
     const currentActive = mySavedTrips.find(t => t.active) || mySavedTrips[0];
     currentActive.active = true;
     
-    // Load full active trip details
+    // Load full active trip details with backend SQLite mappings
     activeTrip.id = currentActive.id;
     activeTrip.destination = currentActive.destination;
     activeTrip.departure = currentActive.departure || '2026-10-10';
-    activeTrip.returnDate = currentActive.returnDate || '2026-10-16';
-    activeTrip.duration = currentActive.durationNum || 7;
-    activeTrip.budget = currentActive.budgetNum || 85000;
+    activeTrip.returnDate = currentActive.return_date || currentActive.returnDate || '2026-10-16';
+    activeTrip.duration = currentActive.duration_num || currentActive.durationNum || 7;
+    activeTrip.budget = currentActive.budget_num || currentActive.budgetNum || 85000;
     activeTrip.currency = currentActive.currency || '₹';
-    activeTrip.travellerType = currentActive.type || 'Couple / Pair';
+    activeTrip.travellerType = currentActive.traveller_type || currentActive.travellerType || currentActive.type || 'Couple / Pair';
     activeTrip.travellers = currentActive.travellers || 2;
     activeTrip.styles = currentActive.styles || ['Cultural & Historic'];
     activeTrip.hotel = currentActive.hotel || 'Cozy Boutique Stay';
@@ -308,7 +308,7 @@ async function initDatabaseData() {
 
     currentCurrency = activeTrip.currency;
 
-    // Load Itinerary
+    // Load Itinerary from DB
     const storedItinerary = await DB.getItinerary(activeTrip.id);
     if (storedItinerary && storedItinerary.length > 0) {
       activeTrip.itinerary = storedItinerary.map(it => ({
@@ -322,16 +322,16 @@ async function initDatabaseData() {
       })).sort((a, b) => a.day - b.day);
     }
 
-    // Load Packing
+    // Load Packing from DB
     const storedPacking = await DB.getPacking(activeTrip.id);
     if (storedPacking) {
       packingData = storedPacking;
     }
 
-    // Load Budget
+    // Load Budget from DB
     const storedBudget = await DB.getBudget(activeTrip.id);
     if (storedBudget) {
-      budgetBreakdown = storedBudget.breakdown || budgetBreakdown;
+      budgetBreakdown = storedBudget.categories || storedBudget.breakdown || budgetBreakdown;
       currentCurrency = storedBudget.currency || currentCurrency;
     }
   } else {
@@ -340,13 +340,14 @@ async function initDatabaseData() {
       id: activeTrip.id,
       destination: activeTrip.destination,
       departure: activeTrip.departure,
-      returnDate: activeTrip.returnDate,
+      return_date: activeTrip.returnDate,
+      dates: `${activeTrip.departure} to ${activeTrip.returnDate}`,
       duration: `${activeTrip.duration} Days`,
-      durationNum: activeTrip.duration,
+      duration_num: activeTrip.duration,
       budget: `${activeTrip.currency}${activeTrip.budget.toLocaleString()}`,
-      budgetNum: activeTrip.budget,
+      budget_num: activeTrip.budget,
       currency: activeTrip.currency,
-      type: `${activeTrip.travellerType} (${activeTrip.travellers})`,
+      traveller_type: `${activeTrip.travellerType} (${activeTrip.travellers})`,
       travellers: activeTrip.travellers,
       styles: activeTrip.styles,
       hotel: activeTrip.hotel,
@@ -359,12 +360,7 @@ async function initDatabaseData() {
     await DB.saveTrip(initialTripRecord);
     await DB.saveItinerary(activeTrip.id, activeTrip.itinerary);
     await DB.savePacking(activeTrip.id, packingData);
-    await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
-
-    // Seed other mock trips
-    for (let i = 1; i < mySavedTrips.length; i++) {
-      await DB.saveTrip(mySavedTrips[i]);
-    }
+    await DB.saveBudget(activeTrip.id, { categories: budgetBreakdown, currency: currentCurrency });
   }
 }
 
@@ -465,7 +461,9 @@ function calculateDuration() {
   }
 }
 
-function handleTripPlan(e) {
+let editingTripId = null;
+
+async function handleTripPlan(e) {
   e.preventDefault();
 
   const dest = document.getElementById('destination').value.trim();
@@ -489,10 +487,70 @@ function handleTripPlan(e) {
   const d1 = new Date(dep);
   const d2 = new Date(ret);
   const daysCount = Math.max(2, Math.min(10, Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24)))) || 5;
+  const city = dest.split(',')[0] || dest;
+
+  if (editingTripId) {
+    const tripId = editingTripId;
+    editingTripId = null;
+    const submitBtn = document.querySelector('#tripPlanForm button[type="submit"]');
+    if (submitBtn) submitBtn.textContent = '✨ Tape into Journal & Build Itinerary';
+
+    activeTrip.destination = dest;
+    activeTrip.departure = dep;
+    activeTrip.returnDate = ret;
+    activeTrip.duration = daysCount;
+    activeTrip.budget = budget;
+    activeTrip.currency = currency;
+    activeTrip.travellerType = travellerType;
+    activeTrip.travellers = travellerCount;
+    activeTrip.styles = styles.length ? styles : ['Cultural & Historic'];
+    activeTrip.hotel = hotel;
+    activeTrip.city = city;
+    activeTrip.pace = pace;
+
+    const existingTrip = mySavedTrips.find(t => t.id === tripId);
+    if (existingTrip) {
+      existingTrip.destination = dest;
+      existingTrip.departure = dep;
+      existingTrip.return_date = ret;
+      existingTrip.dates = `${dep} to ${ret}`;
+      existingTrip.duration = `${daysCount} Days`;
+      existingTrip.duration_num = daysCount;
+      existingTrip.budget = `${currency}${budget.toLocaleString()}`;
+      existingTrip.budget_num = budget;
+      existingTrip.currency = currency;
+      existingTrip.traveller_type = `${travellerType} (${travellerCount})`;
+      existingTrip.hotel = hotel;
+    }
+
+    await DB.updateTrip(tripId, {
+      destination: dest,
+      departure: dep,
+      return_date: ret,
+      dates: `${dep} to ${ret}`,
+      duration: `${daysCount} Days`,
+      duration_num: daysCount,
+      budget: `${currency}${budget.toLocaleString()}`,
+      budget_num: budget,
+      currency: currency,
+      traveller_type: `${travellerType} (${travellerCount})`,
+      travellers: travellerCount,
+      styles: styles,
+      hotel: hotel,
+      city: city,
+      pace: pace
+    });
+
+    renderItinerary();
+    renderBudget();
+    renderMyTrips();
+    showToast(`✏️ Updated journey: ${dest}!`);
+    navigateTo('itinerary');
+    return;
+  }
 
   // Generate dynamic mock itinerary days
   const generatedItinerary = [];
-  const city = dest.split(',')[0] || dest;
 
   for (let i = 1; i <= daysCount; i++) {
     generatedItinerary.push({
@@ -542,14 +600,14 @@ function handleTripPlan(e) {
     id: activeTrip.id,
     destination: dest,
     departure: dep,
-    returnDate: ret,
+    return_date: ret,
     dates: `${dep} to ${ret}`,
     duration: `${daysCount} Days`,
-    durationNum: daysCount,
+    duration_num: daysCount,
     budget: `${currency}${budget.toLocaleString()}`,
-    budgetNum: budget,
+    budget_num: budget,
     currency: currency,
-    type: `${travellerType} (${travellerCount})`,
+    traveller_type: `${travellerType} (${travellerCount})`,
     travellers: travellerCount,
     styles: styles.length ? styles : ['Cultural & Historic'],
     hotel: hotel,
@@ -580,7 +638,7 @@ function handleTripPlan(e) {
   }
   await DB.saveItinerary(activeTrip.id, activeTrip.itinerary);
   await DB.savePacking(activeTrip.id, packingData);
-  await DB.saveBudget(activeTrip.id, { breakdown: budgetBreakdown, currency: currentCurrency });
+  await DB.saveBudget(activeTrip.id, { categories: budgetBreakdown, currency: currentCurrency });
 
   // Re-render
   selectedDayNumber = 1;
@@ -589,7 +647,6 @@ function handleTripPlan(e) {
   renderMyTrips();
 
   showToast(`🎉 New trip to ${dest} created & taped into your journal!`);
-  navigateTo('itinerary');
 }
 
 // ================= ITINERARY RENDERING =================
@@ -870,23 +927,32 @@ function renderMyTrips() {
   mySavedTrips.forEach(trip => {
     const card = document.createElement('div');
     card.className = 'trip-polaroid-card';
+    const dispDates = trip.dates || (trip.departure ? `${trip.departure} to ${trip.return_date || trip.returnDate}` : 'Flexible Dates');
+    const dispDuration = trip.duration || `${trip.duration_num || 5} Days`;
+    const dispBudget = trip.budget || `${trip.currency || '₹'}${trip.budget_num || 0}`;
+    const dispType = trip.traveller_type || trip.travellerType || trip.type || 'Traveler';
+    const dispHotel = trip.hotel ? trip.hotel.split(' ')[0] : 'Stay';
+
     card.innerHTML = `
       <div class="trip-tape"></div>
       <div class="trip-card-img-wrap">
-        <img src="${trip.img}" alt="${trip.destination}" />
+        <img src="${trip.img || 'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=600&q=80'}" alt="${trip.destination}" />
         <span class="trip-status-tag">${trip.active ? '🌟 Active Journal' : 'Saved Plan'}</span>
       </div>
       <div class="trip-card-details">
         <h3>${trip.destination}</h3>
-        <p style="font-size: 0.9rem; color: #6a5d55;">${trip.dates} • ${trip.duration}</p>
+        <p style="font-size: 0.9rem; color: #6a5d55;">${dispDates} • ${dispDuration}</p>
         <div class="trip-meta-chips">
-          <span class="t-chip">🪙 ${trip.budget}</span>
-          <span class="t-chip">👥 ${trip.type}</span>
-          <span class="t-chip">🏡 ${trip.hotel.split(' ')[0]}</span>
+          <span class="t-chip">🪙 ${dispBudget}</span>
+          <span class="t-chip">👥 ${dispType}</span>
+          <span class="t-chip">🏡 ${dispHotel}</span>
         </div>
         <div class="trip-card-actions">
           <button class="btn btn-mint" onclick="switchActiveTrip('${trip.id}')">
-            ${trip.active ? '📖 View Notes' : '⚡ Set Active'}
+            ${trip.active ? '📖 View' : '⚡ Select'}
+          </button>
+          <button class="btn btn-yellow" onclick="editTrip('${trip.id}')" title="Edit trip">
+            ✏️
           </button>
           <button class="btn btn-pink" onclick="deleteTrip('${trip.id}')" title="Delete trip">
             🗑️
@@ -896,6 +962,35 @@ function renderMyTrips() {
     `;
     container.appendChild(card);
   });
+}
+
+async function editTrip(tripId) {
+  const trip = await DB.getTrip(tripId) || mySavedTrips.find(t => t.id === tripId);
+  if (!trip) return;
+
+  editingTripId = tripId;
+  navigateTo('plan');
+
+  document.getElementById('destination').value = trip.destination || '';
+  if (trip.departure) document.getElementById('depDate').value = trip.departure;
+  if (trip.return_date || trip.returnDate) document.getElementById('retDate').value = trip.return_date || trip.returnDate;
+  calculateDuration();
+
+  if (trip.currency) document.getElementById('budgetCurrency').value = trip.currency;
+  if (trip.budget_num || trip.budgetNum) document.getElementById('budgetAmount').value = trip.budget_num || trip.budgetNum;
+
+  const travType = trip.traveller_type || trip.travellerType || trip.type;
+  if (travType) {
+    const cleanType = travType.split(' ')[0];
+    const radio = document.querySelector(`input[name="travellerType"][value^="${cleanType}"]`);
+    if (radio) radio.checked = true;
+  }
+  if (trip.travellers) document.getElementById('travellerCount').value = trip.travellers;
+  if (trip.hotel) document.getElementById('accommodation').value = trip.hotel;
+
+  const submitBtn = document.querySelector('#tripPlanForm button[type="submit"]');
+  if (submitBtn) submitBtn.textContent = '✨ Update Trip & Save Changes';
+  showToast(`✏️ Editing ${trip.destination}. Update fields and save!`);
 }
 
 async function switchActiveTrip(tripId) {
@@ -909,8 +1004,8 @@ async function switchActiveTrip(tripId) {
     activeTrip.id = selected.id;
     activeTrip.destination = selected.destination;
     activeTrip.hotel = selected.hotel;
-    if (selected.durationNum) activeTrip.duration = selected.durationNum;
-    if (selected.budgetNum) activeTrip.budget = selected.budgetNum;
+    if (selected.duration_num || selected.durationNum) activeTrip.duration = selected.duration_num || selected.durationNum;
+    if (selected.budget_num || selected.budgetNum) activeTrip.budget = selected.budget_num || selected.budgetNum;
     if (selected.currency) currentCurrency = selected.currency;
 
     // Load Itinerary
@@ -934,7 +1029,7 @@ async function switchActiveTrip(tripId) {
     // Load Budget
     const storedBudget = await DB.getBudget(selected.id);
     if (storedBudget) {
-      budgetBreakdown = storedBudget.breakdown || budgetBreakdown;
+      budgetBreakdown = storedBudget.categories || storedBudget.breakdown || budgetBreakdown;
       currentCurrency = storedBudget.currency || currentCurrency;
     }
 
@@ -945,7 +1040,6 @@ async function switchActiveTrip(tripId) {
     renderMyTrips();
     showToast(`📔 Opened scrapbook for ${selected.destination}!`);
     navigateTo('itinerary');
-  }
 }
 
 async function deleteTrip(tripId) {

@@ -1,203 +1,211 @@
 /* ==========================================================================
-   TRAVELMATE - MINIMAL PERSISTENT DATABASE (IndexedDB with LocalStorage fallback)
-   Stores only: Trips, Itinerary, Packing, Budget
+   TRAVELMATE - BACKEND API BRIDGE & PERSISTENCE
+   Connects: Frontend -> Backend -> Database (SQLite) -> Backend -> Frontend
    ========================================================================== */
 
+const API_BASE = '/api';
+
 const DB = {
-  dbName: 'TravelMateDB',
-  version: 1,
-  db: null,
+  isBackendAvailable: false,
 
   async init() {
-    return new Promise((resolve) => {
-      if (!window.indexedDB) {
-        console.warn('IndexedDB not supported, falling back to LocalStorage.');
-        resolve(null);
+    try {
+      const res = await fetch(`${API_BASE}/trips`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        this.isBackendAvailable = true;
+        console.log('Connected to TravelMate backend database.');
         return;
       }
-
-      const request = indexedDB.open(this.dbName, this.version);
-
-      request.onupgradeneeded = (e) => {
-        const db = e.target.result;
-
-        // 1. Trips table
-        if (!db.objectStoreNames.contains('trips')) {
-          db.createObjectStore('trips', { keyPath: 'id' });
-        }
-
-        // 2. Itinerary table (stores tripId, day, city, hotel, activities)
-        if (!db.objectStoreNames.contains('itinerary')) {
-          const itStore = db.createObjectStore('itinerary', { keyPath: 'id' });
-          itStore.createIndex('tripId', 'tripId', { unique: false });
-        }
-
-        // 3. Packing table (stores tripId, items)
-        if (!db.objectStoreNames.contains('packing')) {
-          db.createObjectStore('packing', { keyPath: 'tripId' });
-        }
-
-        // 4. Budget table (stores tripId, categories, amounts)
-        if (!db.objectStoreNames.contains('budget')) {
-          db.createObjectStore('budget', { keyPath: 'tripId' });
-        }
-      };
-
-      request.onsuccess = (e) => {
-        this.db = e.target.result;
-        resolve(this.db);
-      };
-
-      request.onerror = () => {
-        resolve(null);
-      };
-    });
+    } catch (e) {
+      console.warn('Backend server not responding, falling back to local storage.');
+      this.isBackendAvailable = false;
+    }
   },
 
-  // --- TRIPS ---
+  // --- TRIPS (Create, View, Edit, Delete) ---
   async getAllTrips() {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('trips', 'readonly');
-        const req = tx.objectStore('trips').getAll();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => resolve([]);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips`);
+        if (res.ok) return await res.json();
+      } catch (e) {
+        console.error('API Error in getAllTrips:', e);
+      }
     }
     const data = localStorage.getItem('tm_trips');
     return data ? JSON.parse(data) : [];
   },
 
+  async getTrip(tripId) {
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}`);
+        if (res.ok) return await res.json();
+      } catch (e) {
+        console.error('API Error in getTrip:', e);
+      }
+    }
+    const trips = await this.getAllTrips();
+    return trips.find(t => t.id === tripId) || null;
+  },
+
   async saveTrip(trip) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('trips', 'readwrite');
-        tx.objectStore('trips').put(trip);
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(trip)
+        });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in saveTrip:', e);
+      }
     }
     const trips = await this.getAllTrips();
     const idx = trips.findIndex(t => t.id === trip.id);
     if (idx >= 0) trips[idx] = trip;
-    else trips.push(trip);
+    else trips.unshift(trip);
     localStorage.setItem('tm_trips', JSON.stringify(trips));
+    return true;
+  },
+
+  async updateTrip(tripId, updates) {
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates)
+        });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in updateTrip:', e);
+      }
+    }
+    const trips = await this.getAllTrips();
+    const trip = trips.find(t => t.id === tripId);
+    if (trip) {
+      Object.assign(trip, updates);
+      localStorage.setItem('tm_trips', JSON.stringify(trips));
+    }
+    return true;
   },
 
   async deleteTrip(tripId) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction(['trips', 'itinerary', 'packing', 'budget'], 'readwrite');
-        tx.objectStore('trips').delete(tripId);
-        tx.objectStore('packing').delete(tripId);
-        tx.objectStore('budget').delete(tripId);
-        
-        const itStore = tx.objectStore('itinerary');
-        const index = itStore.index('tripId');
-        const req = index.getAllKeys(tripId);
-        req.onsuccess = () => {
-          (req.result || []).forEach(k => itStore.delete(k));
-        };
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}`, { method: 'DELETE' });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in deleteTrip:', e);
+      }
     }
     let trips = await this.getAllTrips();
     trips = trips.filter(t => t.id !== tripId);
     localStorage.setItem('tm_trips', JSON.stringify(trips));
+    return true;
   },
 
-  // --- ITINERARY ---
+  // --- ITINERARY (Load, Save) ---
   async getItinerary(tripId) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('itinerary', 'readonly');
-        const index = tx.objectStore('itinerary').index('tripId');
-        const req = index.getAll(tripId);
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => resolve([]);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/itinerary`);
+        if (res.ok) {
+          const rows = await res.json();
+          if (rows && rows.length > 0) return rows;
+        }
+      } catch (e) {
+        console.error('API Error in getItinerary:', e);
+      }
     }
     const data = localStorage.getItem(`tm_itinerary_${tripId}`);
     return data ? JSON.parse(data) : [];
   },
 
   async saveItinerary(tripId, days) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('itinerary', 'readwrite');
-        const store = tx.objectStore('itinerary');
-        days.forEach(d => {
-          store.put({
-            id: `${tripId}-day-${d.day}`,
-            tripId: tripId,
-            day: d.day,
-            city: d.city,
-            hotel: d.hotel,
-            notes: d.notes,
-            activities: {
-              morning: d.morning,
-              afternoon: d.afternoon,
-              evening: d.evening
-            }
-          });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/itinerary`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(days)
         });
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-      });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in saveItinerary:', e);
+      }
     }
     localStorage.setItem(`tm_itinerary_${tripId}`, JSON.stringify(days));
+    return true;
   },
 
-  // --- PACKING ---
+  // --- PACKING (Load, Save) ---
   async getPacking(tripId) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('packing', 'readonly');
-        const req = tx.objectStore('packing').get(tripId);
-        req.onsuccess = () => resolve(req.result ? req.result.items : null);
-        req.onerror = () => resolve(null);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/packing`);
+        if (res.ok) {
+          const items = await res.json();
+          if (items) return items;
+        }
+      } catch (e) {
+        console.error('API Error in getPacking:', e);
+      }
     }
     const data = localStorage.getItem(`tm_packing_${tripId}`);
     return data ? JSON.parse(data) : null;
   },
 
   async savePacking(tripId, items) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('packing', 'readwrite');
-        tx.objectStore('packing').put({ tripId: tripId, items: items });
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/packing`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(items)
+        });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in savePacking:', e);
+      }
     }
     localStorage.setItem(`tm_packing_${tripId}`, JSON.stringify(items));
+    return true;
   },
 
-  // --- BUDGET ---
+  // --- BUDGET (Load, Save) ---
   async getBudget(tripId) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('budget', 'readonly');
-        const req = tx.objectStore('budget').get(tripId);
-        req.onsuccess = () => resolve(req.result ? req.result.data : null);
-        req.onerror = () => resolve(null);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/budget`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data) return data;
+        }
+      } catch (e) {
+        console.error('API Error in getBudget:', e);
+      }
     }
     const data = localStorage.getItem(`tm_budget_${tripId}`);
     return data ? JSON.parse(data) : null;
   },
 
   async saveBudget(tripId, budgetData) {
-    if (this.db) {
-      return new Promise((resolve) => {
-        const tx = this.db.transaction('budget', 'readwrite');
-        tx.objectStore('budget').put({ tripId: tripId, data: budgetData });
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-      });
+    if (this.isBackendAvailable) {
+      try {
+        const res = await fetch(`${API_BASE}/trips/${tripId}/budget`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(budgetData)
+        });
+        return res.ok;
+      } catch (e) {
+        console.error('API Error in saveBudget:', e);
+      }
     }
     localStorage.setItem(`tm_budget_${tripId}`, JSON.stringify(budgetData));
+    return true;
   }
 };
